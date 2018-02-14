@@ -1,4 +1,13 @@
-package config
+/*
+ * Copyright (c) 2018 Yanko Bolanos
+ *
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ *
+ */
+
+package kmsconfig
 
 import (
 	"bytes"
@@ -18,16 +27,13 @@ import (
 	"github.com/aws/aws-sdk-go/service/kms"
 )
 
-var kmssvc *kms.KMS
-
-func init() {
-
+func connectToKMS() *kms.KMS {
 	awsRegion := "us-west-2"
 	config := &aws.Config{
 		Region: aws.String(awsRegion),
 	}
 	sess := session.New(config)
-	kmssvc = kms.New(sess)
+	return kms.New(sess)
 }
 
 type EncryptedConfig struct {
@@ -70,6 +76,33 @@ func decrypt(key, ciphertext []byte) ([]byte, error) {
 	return decrypted[:len(decrypted)-int(padding)], nil
 }
 
+func kmsDecryptAESKey(aesEncryptedKey []byte) []byte {
+	svc := connectToKMS()
+	input := &kms.DecryptInput{
+		CiphertextBlob: aesEncryptedKey,
+	}
+	output, err := svc.DecryptWithContext(context.Background(), input)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return output.Plaintext
+}
+
+func kmsEncryptAESKey(kmsKeyId string, aesKey []byte) string {
+	svc := connectToKMS()
+	input := &kms.EncryptInput{
+		KeyId:     aws.String(kmsKeyId),
+		Plaintext: aesKey,
+	}
+
+	output, err := svc.EncryptWithContext(context.Background(), input)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	return base64.StdEncoding.EncodeToString(output.CiphertextBlob)
+}
+
 func DecryptFile(src string, config interface{}) {
 
 	f, err := os.Open(src)
@@ -89,11 +122,7 @@ func DecryptFile(src string, config interface{}) {
 		log.Fatal(err)
 	}
 
-	input := &kms.DecryptInput{
-		CiphertextBlob: aesEncryptedKey,
-	}
-
-	output, err := kmssvc.DecryptWithContext(context.Background(), input)
+	aesKey := kmsDecryptAESKey(aesEncryptedKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -103,7 +132,7 @@ func DecryptFile(src string, config interface{}) {
 		log.Fatal(err)
 	}
 
-	data, err := decrypt(output.Plaintext, ciphertext)
+	data, err := decrypt(aesKey, ciphertext)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -141,29 +170,21 @@ func EncryptFile(src, dst string) {
 		log.Fatal(err)
 	}
 
-	key := make([]byte, 32)
-	_, err = rand.Read(key)
+	aesKey := make([]byte, 32)
+	_, err = rand.Read(aesKey)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	encryptedData, err := encrypt(key, data)
+	encryptedData, err := encrypt(aesKey, data)
 	if err != nil {
 		panic(err)
 	}
 
-	input := &kms.EncryptInput{
-		KeyId:     aws.String(kmsKeyId),
-		Plaintext: key,
-	}
-
-	output, err := kmssvc.EncryptWithContext(context.Background(), input)
-	if err != nil {
-		log.Fatal(err)
-	}
+	encryptedAESKey := kmsEncryptAESKey(kmsKeyId, aesKey)
 
 	econfig := EncryptedConfig{
-		EncryptedAESKey: base64.StdEncoding.EncodeToString(output.CiphertextBlob),
+		EncryptedAESKey: encryptedAESKey,
 		EncryptedData:   hex.EncodeToString(encryptedData),
 	}
 
