@@ -18,6 +18,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
@@ -34,6 +35,38 @@ func connectToKMS() *kms.KMS {
 	}
 	sess := session.New(config)
 	return kms.New(sess)
+}
+
+func ReadConfig(src string) (io.Reader, error) {
+
+	r, err := DecryptFile(src)
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+
+}
+
+type ConfigWriter struct {
+	buf      bytes.Buffer
+	kmsKeyID string
+	dst      string
+}
+
+func CreateConfigWriter(kmsKeyId string, dst string) *ConfigWriter {
+	return &ConfigWriter{
+		buf:      bytes.Buffer{},
+		kmsKeyID: kmsKeyId,
+		dst:      dst,
+	}
+}
+
+func (c *ConfigWriter) Write(data []byte) (int, error) {
+	return c.buf.Write(data)
+}
+
+func (c *ConfigWriter) Close() error {
+	return EncryptDataWriteFile(c.buf.Bytes(), c.kmsKeyID, c.dst)
 }
 
 type EncryptedConfig struct {
@@ -103,44 +136,72 @@ func kmsEncryptAESKey(kmsKeyId string, aesKey []byte) string {
 	return base64.StdEncoding.EncodeToString(output.CiphertextBlob)
 }
 
-func DecryptFile(src string, config interface{}) {
+func DecryptFile(src string) (io.Reader, error) {
 
 	f, err := os.Open(src)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 	defer f.Close()
 
 	v := EncryptedConfig{}
 	err = json.NewDecoder(f).Decode(&v)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	aesEncryptedKey, err := base64.StdEncoding.DecodeString(v.EncryptedAESKey)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	aesKey := kmsDecryptAESKey(aesEncryptedKey)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	ciphertext, err := hex.DecodeString(v.EncryptedData)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
 	data, err := decrypt(aesKey, ciphertext)
 	if err != nil {
-		log.Fatal(err)
+		return nil, err
 	}
 
-	err = json.Unmarshal(data, config)
+	return bytes.NewReader(data), nil
+}
+
+func parseConfig(data []byte, config interface{}) {
+	err := json.Unmarshal(data, config)
 	if err != nil {
 		log.Fatal(err)
 	}
+}
+
+func EncryptDataWriteFile(data []byte, kmsKeyId, dst string) error {
+
+	aesKey := make([]byte, 32)
+	_, err := rand.Read(aesKey)
+	if err != nil {
+		return err
+	}
+
+	encryptedData, err := encrypt(aesKey, data)
+	if err != nil {
+		return err
+	}
+
+	encryptedAESKey := kmsEncryptAESKey(kmsKeyId, aesKey)
+
+	econfig := EncryptedConfig{
+		EncryptedAESKey: encryptedAESKey,
+		EncryptedData:   hex.EncodeToString(encryptedData),
+	}
+
+	jsonData, err := json.MarshalIndent(econfig, "", "    ")
+	return ioutil.WriteFile(dst, jsonData, 0700)
 
 }
 
@@ -170,26 +231,7 @@ func EncryptFile(src, dst string) {
 		log.Fatal(err)
 	}
 
-	aesKey := make([]byte, 32)
-	_, err = rand.Read(aesKey)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	encryptedData, err := encrypt(aesKey, data)
-	if err != nil {
-		panic(err)
-	}
-
-	encryptedAESKey := kmsEncryptAESKey(kmsKeyId, aesKey)
-
-	econfig := EncryptedConfig{
-		EncryptedAESKey: encryptedAESKey,
-		EncryptedData:   hex.EncodeToString(encryptedData),
-	}
-
-	jsonData, err := json.MarshalIndent(econfig, "", "    ")
-	err = ioutil.WriteFile(dst, jsonData, 0700)
+	err = EncryptDataWriteFile(data, kmsKeyId, dst)
 	if err != nil {
 		log.Fatal(err)
 	}
