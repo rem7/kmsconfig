@@ -12,7 +12,7 @@ import (
 const usage = `
 usage:
 
-	cmd encrypt file kms_key_id
+	cmd encrypt file kms_key_id kms_region
 	cmd show file
 `
 
@@ -21,7 +21,8 @@ func main() {
 	if len(os.Args) >= 4 && os.Args[1] == "encrypt" {
 		src := os.Args[2]
 		kmsKeyId := os.Args[3]
-		err := encryptFile(src, kmsKeyId)
+		kmsRegion := os.Args[4]
+		err := encryptFile(src, kmsKeyId, kmsRegion)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -34,7 +35,7 @@ func main() {
 	}
 }
 
-func encryptFile(src string, kmskeyid string) error {
+func encryptFile(src, kmskeyid, kmsRegion string) error {
 	r, err := os.Open(src)
 	if err != nil {
 		return err
@@ -48,7 +49,7 @@ func encryptFile(src string, kmskeyid string) error {
 
 	ext := filepath.Ext(src)
 	dst := fmt.Sprintf("%s.encrypted%s", src[:len(src)-len(ext)], ext)
-	return kmsconfig.EncryptDataWriteFile(data, kmskeyid, dst)
+	return kmsconfig.EncryptDataWriteFile(data, kmskeyid, kmsRegion, dst)
 }
 
 func decryptFile(file string) []byte {

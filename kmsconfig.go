@@ -24,12 +24,23 @@ import (
 	"os"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/ec2metadata"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/kms"
 )
 
-func connectToKMS() *kms.KMS {
-	awsRegion := "us-west-2"
+func connectToKMS(awsRegion string) *kms.KMS {
+
+	if awsRegion == "" {
+		s := session.Must(session.NewSession())
+		ec2Meta := ec2metadata.New(s)
+		region, err := ec2Meta.Region()
+		if err != nil {
+			log.Fatalf("kms failed to get region for kms key", err.Error())
+		}
+		awsRegion = region
+	}
+
 	config := &aws.Config{
 		Region: aws.String(awsRegion),
 	}
@@ -48,16 +59,18 @@ func ReadConfig(src string) (io.Reader, error) {
 }
 
 type ConfigWriter struct {
-	buf      bytes.Buffer
-	kmsKeyID string
-	dst      string
+	buf       bytes.Buffer
+	kmsKeyID  string
+	dst       string
+	kmsRegion string
 }
 
-func CreateConfigWriter(kmsKeyId string, dst string) *ConfigWriter {
+func CreateConfigWriter(kmsKeyId, kmsRegion, dst string) *ConfigWriter {
 	return &ConfigWriter{
-		buf:      bytes.Buffer{},
-		kmsKeyID: kmsKeyId,
-		dst:      dst,
+		buf:       bytes.Buffer{},
+		kmsKeyID:  kmsKeyId,
+		dst:       dst,
+		kmsRegion: kmsRegion,
 	}
 }
 
@@ -66,12 +79,13 @@ func (c *ConfigWriter) Write(data []byte) (int, error) {
 }
 
 func (c *ConfigWriter) Close() error {
-	return EncryptDataWriteFile(c.buf.Bytes(), c.kmsKeyID, c.dst)
+	return EncryptDataWriteFile(c.buf.Bytes(), c.kmsKeyID, c.kmsRegion, c.dst)
 }
 
 type EncryptedConfig struct {
 	EncryptedAESKey string `json:"encrypted_aes_key"`
 	EncryptedData   string `json:"encrypted_data"`
+	KmsKeyRegion    string `json:"kms_key_region"`
 }
 
 func Pad(src []byte) []byte {
@@ -109,8 +123,8 @@ func decrypt(key, ciphertext []byte) ([]byte, error) {
 	return decrypted[:len(decrypted)-int(padding)], nil
 }
 
-func kmsDecryptAESKey(aesEncryptedKey []byte) []byte {
-	svc := connectToKMS()
+func kmsDecryptAESKey(aesEncryptedKey []byte, region string) []byte {
+	svc := connectToKMS(region)
 	input := &kms.DecryptInput{
 		CiphertextBlob: aesEncryptedKey,
 	}
@@ -121,8 +135,8 @@ func kmsDecryptAESKey(aesEncryptedKey []byte) []byte {
 	return output.Plaintext
 }
 
-func kmsEncryptAESKey(kmsKeyId string, aesKey []byte) string {
-	svc := connectToKMS()
+func kmsEncryptAESKey(kmsKeyId string, aesKey []byte, region string) string {
+	svc := connectToKMS(region)
 	input := &kms.EncryptInput{
 		KeyId:     aws.String(kmsKeyId),
 		Plaintext: aesKey,
@@ -155,7 +169,7 @@ func DecryptFile(src string) (io.Reader, error) {
 		return nil, err
 	}
 
-	aesKey := kmsDecryptAESKey(aesEncryptedKey)
+	aesKey := kmsDecryptAESKey(aesEncryptedKey, v.KmsKeyRegion)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +194,7 @@ func parseConfig(data []byte, config interface{}) {
 	}
 }
 
-func EncryptDataWriteFile(data []byte, kmsKeyId, dst string) error {
+func EncryptDataWriteFile(data []byte, kmsKeyId, region, dst string) error {
 
 	aesKey := make([]byte, 32)
 	_, err := rand.Read(aesKey)
@@ -193,11 +207,12 @@ func EncryptDataWriteFile(data []byte, kmsKeyId, dst string) error {
 		return err
 	}
 
-	encryptedAESKey := kmsEncryptAESKey(kmsKeyId, aesKey)
+	encryptedAESKey := kmsEncryptAESKey(kmsKeyId, aesKey, region)
 
 	econfig := EncryptedConfig{
 		EncryptedAESKey: encryptedAESKey,
 		EncryptedData:   hex.EncodeToString(encryptedData),
+		KmsKeyRegion:    region,
 	}
 
 	jsonData, err := json.MarshalIndent(econfig, "", "    ")
@@ -226,12 +241,19 @@ func EncryptFile(src, dst string) {
 		log.Fatal("kms_key_id missing")
 	}
 
+	kmsKeyRegion := ""
+	if val, ok := v["kms_key_region"].(string); ok {
+		kmsKeyRegion = val
+	} else {
+		log.Fatal("kms_key_id missing")
+	}
+
 	data, err := json.MarshalIndent(v, "", "    ")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	err = EncryptDataWriteFile(data, kmsKeyId, dst)
+	err = EncryptDataWriteFile(data, kmsKeyId, kmsKeyRegion, dst)
 	if err != nil {
 		log.Fatal(err)
 	}
