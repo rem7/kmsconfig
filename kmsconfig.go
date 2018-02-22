@@ -7,7 +7,7 @@
  *
  */
 
-package kmsconfig
+package kmsconfig // import "github.com/rem7/kmsconfig"
 
 import (
 	"bytes"
