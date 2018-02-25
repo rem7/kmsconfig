@@ -7,6 +7,8 @@
  *
  */
 
+// Use this package to encrypt/decrypt configuration files with AES and
+// encrypt the AES key with AWS KMS.
 package kmsconfig // import "github.com/rem7/kmsconfig"
 
 import (
@@ -48,16 +50,6 @@ func connectToKMS(awsRegion string) *kms.KMS {
 	return kms.New(sess)
 }
 
-func ReadConfig(src string) (io.Reader, error) {
-
-	r, err := DecryptFile(src)
-	if err != nil {
-		return nil, err
-	}
-	return r, nil
-
-}
-
 type ConfigWriter struct {
 	buf       bytes.Buffer
 	kmsKeyID  string
@@ -65,6 +57,8 @@ type ConfigWriter struct {
 	kmsRegion string
 }
 
+// Create a ConfigWriter. It meets io.ReadCloser interface and anything
+// written will get encrypted once closed.
 func CreateConfigWriter(kmsKeyId, kmsRegion, dst string) *ConfigWriter {
 	return &ConfigWriter{
 		buf:       bytes.Buffer{},
@@ -82,18 +76,22 @@ func (c *ConfigWriter) Close() error {
 	return EncryptDataWriteFile(c.buf.Bytes(), c.kmsKeyID, c.kmsRegion, c.dst)
 }
 
+// This is the json structure used to output the file that your application
+// will read from
 type EncryptedConfig struct {
 	EncryptedAESKey string `json:"encrypted_aes_key"`
 	EncryptedData   string `json:"encrypted_data"`
 	KmsKeyRegion    string `json:"kms_key_region"`
 }
 
-func Pad(src []byte) []byte {
+func pad(src []byte) []byte {
 	padding := aes.BlockSize - len(src)%aes.BlockSize
 	padtext := bytes.Repeat([]byte{byte(padding)}, padding)
 	return append(src, padtext...)
 }
 
+// every time we encrypt we generate a new key
+// so we leave the iv as 0s
 func encrypt(key, text []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
@@ -102,7 +100,7 @@ func encrypt(key, text []byte) ([]byte, error) {
 
 	iv := []byte{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
 	mode := cipher.NewCBCEncrypter(block, iv)
-	msg := Pad(text)
+	msg := pad(text)
 	ciphertext := make([]byte, len(msg))
 	mode.CryptBlocks(ciphertext, msg)
 	return ciphertext, nil
@@ -150,7 +148,9 @@ func kmsEncryptAESKey(kmsKeyId string, aesKey []byte, region string) string {
 	return base64.StdEncoding.EncodeToString(output.CiphertextBlob)
 }
 
-func DecryptFile(src string) (io.Reader, error) {
+// This will return an io.Reader that when read will return
+// the data unencrypted. This can be passed to a decoder (json,yaml,etc).
+func ReadConfig(src string) (io.Reader, error) {
 
 	f, err := os.Open(src)
 	if err != nil {
@@ -187,13 +187,6 @@ func DecryptFile(src string) (io.Reader, error) {
 	return bytes.NewReader(data), nil
 }
 
-func parseConfig(data []byte, config interface{}) {
-	err := json.Unmarshal(data, config)
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
 func EncryptDataWriteFile(data []byte, kmsKeyId, region, dst string) error {
 
 	aesKey := make([]byte, 32)
@@ -220,7 +213,9 @@ func EncryptDataWriteFile(data []byte, kmsKeyId, region, dst string) error {
 
 }
 
-func EncryptFile(src, dst string) {
+// Helper function that will encrypt a JSON file.
+// The JSON file must contain a "kms_key_id" and a "kms_key_region"
+func EncryptJSONFile(src, dst string) {
 
 	f, err := os.Open(src)
 	if err != nil {

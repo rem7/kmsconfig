@@ -12,8 +12,8 @@ import (
 const usage = `
 usage:
 
-	cmd encrypt file kms_key_id kms_region
-	cmd show file
+	kmsconfig encrypt file kms_key_id kms_region
+	kmsconfig show file
 `
 
 func main() {
